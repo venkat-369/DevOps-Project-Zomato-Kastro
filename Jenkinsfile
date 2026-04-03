@@ -4,6 +4,7 @@ pipeline {
     tools {
         jdk 'jdk17'
         maven 'maven3'
+        nodejs 'nodejs-18'
     }
 
     environment {
@@ -36,11 +37,19 @@ stage("Build App") {
         sh 'npm run build || true'
     }
 }
-        stage("Test") {
-            steps {
+       stage('Test') {
+    steps {
+        script {
+            if (fileExists('package.json')) {
+                sh 'npm test -- --watchAll=false'
+            } else if (fileExists('pom.xml')) {
                 sh 'mvn test'
+            } else {
+                echo "No valid test framework found"
             }
         }
+    }
+}
 
         stage("SonarQube Analysis") {
             steps {
