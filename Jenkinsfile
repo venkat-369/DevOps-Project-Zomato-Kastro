@@ -1,10 +1,14 @@
 pipeline {
     agent any
-  tools {
-    nodejs 'node16.19' // must match the NodeJS installation name in Jenkins
-}
+
+    tools {
+        nodejs 'node16.19'
+    }
+
     environment {
-        TRIVY_REPORT = 'trivy.txt'
+        DOCKER_IMAGE = "kastrov/zomato:latest"
+        TRIVY_REPORT = "trivy.txt"
+        SONAR_SCANNER = tool 'sonar-scanner'
     }
 
     stages {
@@ -15,20 +19,37 @@ pipeline {
             }
         }
 
-       stage("Git Checkout") {
-    steps {
-        git url: 'https://github.com/Arunasri-0096/devops-zomato.git', branch: 'master'
-    }
-}
-stage("Check Tool") {
-        steps {
-            sh 'ls -l'
-            sh 'which dependency-check || echo "Not Found"'
+        stage("Git Checkout") {
+            steps {
+                git url: 'https://github.com/Arunasri-0096/devops-zomato.git', branch: 'master'
+            }
         }
-    }
+
         stage("Install Dependencies") {
             steps {
                 sh 'npm install'
+            }
+        }
+
+        stage("SonarQube Analysis") {
+            steps {
+                withSonarQubeEnv('sonarqube-server') {
+                    sh """
+                    ${SONAR_SCANNER}/bin/sonar-scanner \
+                    -Dsonar.projectKey=zomato \
+                    -Dsonar.sources=. \
+                    -Dsonar.host.url=$SONAR_HOST_URL \
+                    -Dsonar.login=$SONAR_AUTH_TOKEN
+                    """
+                }
+            }
+        }
+
+        stage("Quality Gate") {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
             }
         }
 
@@ -38,16 +59,31 @@ stage("Check Tool") {
             }
         }
 
-        stage('OWASP Dependency Check') {
-    when {
-        expression { return false }
-    }
-    steps {
-        echo "Skipping OWASP"
-    }
-}
+        stage("Nexus Upload (Artifact)") {
+            steps {
+                script {
+                    sh 'tar -czf app.tar.gz .'
+                    
+                    nexusArtifactUploader(
+                        nexusVersion: 'nexus3',
+                        protocol: 'http',
+                        nexusUrl: 'YOUR_NEXUS_URL:8081',
+                        groupId: 'zomato',
+                        version: '1.0',
+                        repository: 'npm-repo',
+                        credentialsId: 'nexus-creds',
+                        artifacts: [
+                            [artifactId: 'zomato-app',
+                             classifier: '',
+                             file: 'app.tar.gz',
+                             type: 'tar.gz']
+                        ]
+                    )
+                }
+            }
+        }
 
-        stage("Trivy File Scan") {
+        stage("Trivy Scan") {
             steps {
                 sh "trivy fs . > ${TRIVY_REPORT}"
             }
@@ -55,15 +91,15 @@ stage("Check Tool") {
 
         stage("Docker Build") {
             steps {
-                sh 'docker build -t kastrov/zomato:latest .'
+                sh "docker build -t ${DOCKER_IMAGE} ."
             }
         }
 
-        stage("Push Docker Image") {
+        stage("Docker Push") {
             steps {
                 script {
                     withDockerRegistry(credentialsId: 'docker') {
-                        sh 'docker push kastrov/zomato:latest'
+                        sh "docker push ${DOCKER_IMAGE}"
                     }
                 }
             }
@@ -83,28 +119,15 @@ stage("Check Tool") {
     post {
         always {
             emailext attachLog: true,
-                subject: "'${currentBuild.result}'",
+                subject: "Build ${currentBuild.result}",
                 body: """
-                <html>
-                <body>
-                    <h2>Build Report</h2>
-                    <p><b>Project:</b> ${env.JOB_NAME}</p>
-                    <p><b>Build Number:</b> ${env.BUILD_NUMBER}</p>
-                    <p><b>URL:</b> ${env.BUILD_URL}</p>
-                </body>
-                </html>
+                <h2>Build Report</h2>
+                <p><b>Project:</b> ${env.JOB_NAME}</p>
+                <p><b>Build:</b> ${env.BUILD_NUMBER}</p>
+                <p><b>URL:</b> ${env.BUILD_URL}</p>
                 """,
                 to: 'srividyapsn2014@gmail.com',
-                mimeType: 'text/html',
                 attachmentsPattern: "${TRIVY_REPORT}"
-        }
-
-        success {
-            echo "✅ Pipeline Success"
-        }
-
-        failure {
-            echo "❌ Pipeline Failed"
         }
     }
 }
